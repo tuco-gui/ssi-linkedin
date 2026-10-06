@@ -58,9 +58,47 @@ export function profileScore(exp,now=new Date()) {
  const total=sections.reduce((a,s)=>a+s.weight*s.value,0)/sections.reduce((a,s)=>a+s.weight,0);
  return {score:r1(total*100),sections:sections.map(({name,weight,score,evidence})=>({name,weight,score,evidence})),inputs:x};
 }
+
+function archiveMetrics(exp,now,ownerName='') {
+ const out={};
+ const recommendations=exp.findRows('recommendations received'); if(recommendations.length) out.recommendations_count=recommendations.length;
+ const groups=exp.findRows('groups'); if(groups.length) out.relevant_groups_count=groups.length;
+ const comments=exp.findRows('comments'), reactions=exp.findRows('reactions');
+ if(comments.length||reactions.length) out.engagements_given_30d=recent(comments,now)+recent(reactions,now);
+ const sources=[...comments,...reactions,...exp.findRows('share'),...exp.findRows('search queries'),...exp.findRows('messages'),...exp.findRows('logins')];
+ if(sources.length){
+   const cutoff=+now-30*86400000, days=new Set();
+   for(const row of sources){for(const [k,v] of Object.entries(row)){if(!/(date|time|created|sent at)/i.test(k))continue;const d=dateValue(v)||(()=>{const x=new Date(String(v||''));return Number.isNaN(+x)?null:x;})();if(d&&+d>=cutoff&&+d<=+now)days.add(d.toISOString().slice(0,10));break;}}
+   out.active_days_30d=days.size;
+ }
+ const connections=exp.findRows('connections','connection');
+ if(connections.length){
+   const rx=/\b(ceo|cto|coo|cfo|cmo|cpo|cio|chief|founder|co.?founder|president|owner|managing director|managing partner|general partner|partner|vice president|svp|evp|vp|head of|director|principal)\b/i;
+   const senior=connections.filter(r=>rx.test(first(r,'Position','Title'))).length;
+   out.senior_connections_quality_0_10=r1(band(senior/Math.max(1,connections.length)*100,[[0,.1],[5,.3],[10,.5],[20,.7],[30,.9],[40,1]])*10);
+ }
+ const messages=exp.findRows('messages');
+ if(messages.length&&ownerName){
+   const norm=s=>String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim();
+   const mineName=norm(ownerName), cutoff=+now-30*86400000, threads=new Map(); let sent=0;
+   for(const row of messages){
+     let d=null;for(const [k,v] of Object.entries(row)){if(/date|time|created/i.test(k)){d=dateValue(v)||(()=>{const x=new Date(String(v||''));return Number.isNaN(+x)?null:x;})();if(d)break;}}
+     if(!d||+d<cutoff||+d>+now)continue;
+     const from=norm(first(row,'FROM','From','Sender')); const mine=from===mineName||from.includes(mineName)||mineName.includes(from);
+     const id=first(row,'CONVERSATION ID','Conversation ID','CONVERSATION TITLE')||'unknown';
+     const t=threads.get(id)||{mine:0,theirs:0}; if(mine){t.mine++;sent++;}else t.theirs++;threads.set(id,t);
+   }
+   out.messages_sent_30d=sent;
+   const started=[...threads.values()].filter(t=>t.mine>0);if(started.length)out.message_response_rate=r1(started.filter(t=>t.theirs>0).length/started.length*100);
+   if(threads.size)out.recurring_relationships_quality_0_10=r1(Math.min(10,10*[...threads.values()].filter(t=>t.mine>=2&&t.theirs>=2).length/Math.max(1,threads.size)));
+ }
+ return out;
+}
+
 export function analyze(exp,manual={},now=new Date()) {
  const p=profileScore(exp,now),x=p.inputs;
- const n=k=>numeric(manual,k),b=k=>boolean(manual,k);
+ const derived=archiveMetrics(exp,now,x.name); const inputs={...derived,...manual};
+ const n=k=>numeric(inputs,k),b=k=>boolean(inputs,k);
  const fb=n('featured_items');const rec=n('recommendations_count');const follow=n('follower_growth_30d');
  const visuals=[b('profile_photo'),b('cover_photo'),fb===null?null:band(fb,[[0,0],[1,.6],[3,1]])].filter(v=>v!==null);
  const visual=visuals.length?visuals.reduce((a,v)=>a+v,0)/visuals.length:null;
@@ -97,5 +135,5 @@ export function analyze(exp,manual={},now=new Date()) {
  const convert=aggregate([signal('Leads',5,leads===null?null:band(leads,[[0,0],[1,.3],[3,.55],[6,.8],[10,1]])),signal('Conversas qualificadas',5,conv===null?null:band(conv,[[0,0],[1,.3],[3,.55],[6,.8],[10,1]])),signal('Reuniões',5,meetings===null?null:band(meetings,[[0,0],[1,.35],[2,.6],[4,.85],[6,1]])),signal('Oportunidades',5,opps===null?null:band(opps,[[0,0],[1,.45],[2,.7],[4,1]]))],20);
  const dimensions={positioning:{label:'Posicionamento',...pos},authority:{label:'Autoridade e conteúdo',...authority},network:{label:'Rede e ICP',...network},engagement:{label:'Engajamento',...personalEng},conversion:{label:'Conversão comercial',...convert}};
  const own={score:r1(Object.values(dimensions).reduce((a,v)=>a+v.score,0)),confidence:r1(Object.values(dimensions).reduce((a,v)=>a+v.confidence,0)/5),dimensions,engine_version:VERSION};
- return {generated_at:now.toISOString(),engine_version:VERSION,files_detected:exp.names.sort(),ssi_estimated:estimated,ssi_figueira:own,manual_inputs:manual};
+ return {generated_at:now.toISOString(),engine_version:VERSION,files_detected:exp.names.sort(),ssi_estimated:estimated,ssi_figueira:own,manual_inputs:manual,automatic_inputs:derived,effective_inputs:inputs};
 }
