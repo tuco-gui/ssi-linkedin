@@ -1,4 +1,4 @@
-export const VERSION = '0.2.0';
+export const VERSION = '0.3.0';
 const r1 = x => Math.round((x + Number.EPSILON) * 10) / 10;
 const clamp = (v,lo=0,hi=1) => Math.max(lo,Math.min(hi,v));
 const band = (n,pairs) => {let value=0;for(const [bound,score] of pairs)if(n>=bound)value=score;return clamp(value);};
