@@ -1,0 +1,14 @@
+{
+  "name": "linkedin-ssi-lab",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test",
+    "dev": "npx http-server public -a 127.0.0.1 -p 8787 -c-1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
