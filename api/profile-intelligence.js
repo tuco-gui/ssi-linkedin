@@ -1,4 +1,5 @@
 const PRIMARY_PROFILE_ACTOR = 'linkedintel-core~linkedin-profile-scraper-no-cookies';
+const SECONDARY_PROFILE_ACTOR = 'datascrapers~linkedin-profile-scraper';
 const FALLBACK_PROFILE_ACTOR = 'atomus~linkedin-profile-scraper';
 const POSTS_ACTOR = 'harvestapi~linkedin-profile-posts';
 
@@ -90,6 +91,7 @@ function normalizeProfile(records) {
     }))
   );
   const experience = arr(profile.experience).length ? arr(profile.experience)
+    : arr(profile.positions).length ? arr(profile.positions)
     : groupedExperience.length ? groupedExperience
     : records.filter(r => type(r).includes('experience'));
 
@@ -118,8 +120,8 @@ function normalizeProfile(records) {
     industry: firstText(profile.industryName, profile.industry, profile.company?.industry),
     followers: firstNum(profile.followerCount, profile.followers, profile.follower_count),
     connections: firstNum(profile.connectionsCount, profile.connections, profile.connectionCount, profile.connection_count),
-    photo: firstText(profile.profilePictureUrl, profile.pictureUrl, profile.avatar, profile.profileImageUrl, profile.profile_image_url, profile.picture_url),
-    cover: firstText(profile.backgroundImageUrl, profile.backgroundUrl, profile.coverImageUrl, profile.background_image_url, profile.background_url, profile.backgroundPic),
+    photo: firstText(profile.profilePictureUrl, profile.profilePicture, profile.pictureUrl, profile.avatar, profile.profileImageUrl, profile.profile_image_url, profile.picture_url),
+    cover: firstText(profile.backgroundImageUrl, profile.backgroundPicture, profile.backgroundUrl, profile.coverImageUrl, profile.background_image_url, profile.background_url, profile.backgroundPic),
     recommendationsReceived: received.length || (recommendations.length ? recommendations.length : recommendationsEmbedded),
     groupsCount: groups.length || null,
     experience,
@@ -136,6 +138,10 @@ async function fetchProfile(profileUrl,token){
     {
       actor:PRIMARY_PROFILE_ACTOR,
       input:{profileUrls:[profileUrl],includeAbout:true,includeRecommendations:true,includeInterests:true,includeSimilar:false}
+    },
+    {
+      actor:SECONDARY_PROFILE_ACTOR,
+      input:{profiles:[profileUrl],concurrency:1}
     },
     {
       actor:FALLBACK_PROFILE_ACTOR,
@@ -236,9 +242,19 @@ export default async function handler(req, res) {
     },token).then(records=>({records,error:null})).catch(e=>({records:[],error:e?.message||String(e)}));
 
     const [{profile,source,diagnostics},postResult]=await Promise.all([profilePromise,postsPromise]);
-    const posts = normalizePosts(postResult.records, profile.followers);
+    let publicPosts=postResult.records;
+    if(!publicPosts.length && Array.isArray(profile.raw?.activities)){
+      publicPosts=profile.raw.activities.map(a=>({
+        type:'post',
+        content:a.text||a.title||'',
+        postUrl:a.postUrl||a.url||'',
+        postedAt:{date:a.date||a.publishedAt||'',timestamp:a.timestamp||null},
+        engagement:{likes:firstNum(a.likes,a.likeCount,0),comments:firstNum(a.comments,a.commentCount,0),shares:firstNum(a.shares,a.shareCount,0)}
+      }));
+    }
+    const posts = normalizePosts(publicPosts, profile.followers);
     const notes=['Dados públicos do perfil e posts. Não inclui ações privadas da conta nem Sales Navigator.'];
-    if(postResult.error)notes.push('Posts recentes indisponíveis nesta consulta: '+postResult.error);
+    if(postResult.error && !publicPosts.length)notes.push('Posts recentes indisponíveis nesta consulta: '+postResult.error);
     if(diagnostics.length)notes.push(...diagnostics.slice(0,2));
 
     return json(res, 200, {
