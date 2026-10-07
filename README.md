@@ -32,8 +32,18 @@ npm run build
 
 ## Metodologia
 
-Versão `0.3.0`. A régua mantém os quatro pilares de 25 pontos do SSI estimado e cinco dimensões do score próprio. Cada sinal registra sua disponibilidade e a nota final acompanha uma medida de confiança.
+Versão `0.4.0`. A régua mantém os quatro pilares de 25 pontos do SSI estimado e cinco dimensões do score próprio. Cada sinal registra sua disponibilidade e a nota final acompanha uma medida de confiança.
 
 ## Limitações
 
 Métricas privadas do Sales Navigator, como leads salvos e perfis de prospects visualizados, não podem ser obtidas por um scraper público sem autenticação. A API oficial do Sales Navigator exige acesso de parceiro aprovado. Visualizações recebidas no perfil e search appearances também têm APIs oficiais próprias, mas dependem de permissões aprovadas pelo LinkedIn.
+
+
+## v0.4.0
+
+- fallback de coleta pública quando a primeira fonte não resolve um perfil;
+- parser de CSV tolerante ao preâmbulo de `Connections.csv`;
+- nomes de arquivos com underscore/hífen normalizados;
+- métricas derivadas do ZIP aparecem também nos 25 campos da interface;
+- cálculo de dias ativos, buscas, qualidade da rede e taxa estimada de aceitação quando os arquivos necessários existem;
+- combinação entre dados públicos do link e dados privados disponíveis no ZIP.

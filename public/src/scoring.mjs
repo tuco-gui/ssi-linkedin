@@ -1,4 +1,4 @@
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0';
 const r1 = x => Math.round((x + Number.EPSILON) * 10) / 10;
 const clamp = (v,lo=0,hi=1) => Math.max(lo,Math.min(hi,v));
 const band = (n,pairs) => {let value=0;for(const [bound,score] of pairs)if(n>=bound)value=score;return clamp(value);};
@@ -18,6 +18,7 @@ function dateValue(s) {
  const v=String(s).trim();
  if (/^\d{4}-\d\d-\d\d/.test(v)) {const d=new Date(v.slice(0,10)+'T00:00:00Z');return Number.isNaN(+d)?null:d;}
  const m=v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);if(m){const d=new Date(Date.UTC(+m[3],+m[1]-1,+m[2]));return Number.isNaN(+d)?null:d;}
+ const parsed=new Date(v);if(!Number.isNaN(+parsed))return parsed;
  const year=v.match(/(?:19|20)\d{2}/); if(year) return new Date(Date.UTC(+year[0],0,1));
  return null;
 }
@@ -61,40 +62,88 @@ export function profileScore(exp,now=new Date()) {
 
 function archiveMetrics(exp,now,ownerName='') {
  const out={};
- const recommendations=exp.findRows('recommendations received'); if(recommendations.length) out.recommendations_count=recommendations.length;
- const groups=exp.findRows('groups'); if(groups.length) out.relevant_groups_count=groups.length;
+ const rowDate=row=>{
+   for(const [k,v] of Object.entries(row||{})){
+     if(!/(date|time|created|sent at|connected on|saved at|applied|timestamp)/i.test(k))continue;
+     const d=dateValue(v); if(d)return d;
+   }
+   return null;
+ };
+ const recentRows=rows=>{
+   const cutoff=+now-30*86400000;let count=0;
+   for(const row of rows){const d=rowDate(row);if(d&&+d>=cutoff&&+d<=+now)count++;}
+   return count;
+ };
+
+ const recommendations=exp.findRows('recommendations received');
+ if(recommendations.length) out.recommendations_count=recommendations.length;
+
+ const groups=exp.findRows('groups');
+ if(groups.length) out.relevant_groups_count=groups.length;
+
+ const searchQueries=exp.findRows('search queries');
+ if(searchQueries.length) out.people_searches_30d=recentRows(searchQueries);
+
  const comments=exp.findRows('comments'), reactions=exp.findRows('reactions');
- if(comments.length||reactions.length) out.engagements_given_30d=recent(comments,now)+recent(reactions,now);
- const sources=[...comments,...reactions,...exp.findRows('share'),...exp.findRows('search queries'),...exp.findRows('messages'),...exp.findRows('logins')];
- if(sources.length){
-   const cutoff=+now-30*86400000, days=new Set();
-   for(const row of sources){for(const [k,v] of Object.entries(row)){if(!/(date|time|created|sent at)/i.test(k))continue;const d=dateValue(v)||(()=>{const x=new Date(String(v||''));return Number.isNaN(+x)?null:x;})();if(d&&+d>=cutoff&&+d<=+now)days.add(d.toISOString().slice(0,10));break;}}
-   out.active_days_30d=days.size;
+ if(comments.length||reactions.length) out.engagements_given_30d=recentRows(comments)+recentRows(reactions);
+
+ // Basic LinkedIn exports still contain several dated actions. Count unique recent active days
+ // without pretending that static profile/education/position dates are usage activity.
+ const activityName=/(invitation|connection|comment|reaction|share|search|message|login|job application|saved job|company follow|event|learning|receipt)/i;
+ const cutoff=+now-30*86400000, days=new Set();
+ for(const [name,rows] of Object.entries(exp.files||{})){
+   if(!activityName.test(name))continue;
+   for(const row of rows||[]){const d=rowDate(row);if(d&&+d>=cutoff&&+d<=+now)days.add(d.toISOString().slice(0,10));}
  }
+ if(days.size) out.active_days_30d=days.size;
+
  const connections=exp.findRows('connections','connection');
  if(connections.length){
    const rx=/\b(ceo|cto|coo|cfo|cmo|cpo|cio|chief|founder|co.?founder|president|owner|managing director|managing partner|general partner|partner|vice president|svp|evp|vp|head of|director|principal)\b/i;
    const senior=connections.filter(r=>rx.test(first(r,'Position','Title'))).length;
-   out.senior_connections_quality_0_10=r1(band(senior/Math.max(1,connections.length)*100,[[0,.1],[5,.3],[10,.5],[20,.7],[30,.9],[40,1]])*10);
+   const seniorPct=senior/Math.max(1,connections.length)*100;
+   const seniorQ=r1(band(seniorPct,[[0,.1],[5,.3],[10,.5],[20,.7],[30,.9],[40,1]])*10);
+   out.senior_connections_quality_0_10=seniorQ;
+   const described=connections.filter(r=>first(r,'Position','Title')&&first(r,'Company')).length/Math.max(1,connections.length);
+   out.target_network_quality_0_10=r1(Math.min(10,seniorQ*.7+described*10*.3));
  }
+
+ const invitations=exp.findRows('invitations','invitation');
+ if(invitations.length&&connections.length){
+   const norm=s=>String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim();
+   const normUrl=s=>String(s||'').toLowerCase().split('?')[0].replace(/\/$/,'').trim();
+   const connUrls=new Set(connections.map(r=>normUrl(first(r,'URL','Profile URL','LinkedIn URL'))).filter(Boolean));
+   const connNames=new Set(connections.map(r=>norm([first(r,'First Name'),first(r,'Last Name')].filter(Boolean).join(' '))).filter(Boolean));
+   const outgoing=invitations.filter(r=>/out/i.test(first(r,'Direction')));
+   if(outgoing.length){
+     const accepted=outgoing.filter(r=>{
+       const url=normUrl(first(r,'inviteeProfileUrl','Invitee Profile Url','URL'));
+       const name=norm(first(r,'To','Invitee','Name'));
+       return (url&&connUrls.has(url))||(name&&connNames.has(name));
+     }).length;
+     out.acceptance_rate=r1(accepted/outgoing.length*100);
+   }
+ }
+
  const messages=exp.findRows('messages');
  if(messages.length&&ownerName){
    const norm=s=>String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim();
-   const mineName=norm(ownerName), cutoff=+now-30*86400000, threads=new Map(); let sent=0;
+   const mineName=norm(ownerName), threads=new Map(); let sent=0;
    for(const row of messages){
-     let d=null;for(const [k,v] of Object.entries(row)){if(/date|time|created/i.test(k)){d=dateValue(v)||(()=>{const x=new Date(String(v||''));return Number.isNaN(+x)?null:x;})();if(d)break;}}
+     const d=rowDate(row);
      if(!d||+d<cutoff||+d>+now)continue;
-     const from=norm(first(row,'FROM','From','Sender')); const mine=from===mineName||from.includes(mineName)||mineName.includes(from);
-     const id=first(row,'CONVERSATION ID','Conversation ID','CONVERSATION TITLE')||'unknown';
+     const from=norm(first(row,'FROM','From','Sender'));
+     const mine=Boolean(from)&&(from===mineName||from.includes(mineName)||mineName.includes(from));
+     const id=first(row,'CONVERSATION ID','Conversation ID','CONVERSATION TITLE','Conversation Title')||'unknown';
      const t=threads.get(id)||{mine:0,theirs:0}; if(mine){t.mine++;sent++;}else t.theirs++;threads.set(id,t);
    }
    out.messages_sent_30d=sent;
-   const started=[...threads.values()].filter(t=>t.mine>0);if(started.length)out.message_response_rate=r1(started.filter(t=>t.theirs>0).length/started.length*100);
+   const started=[...threads.values()].filter(t=>t.mine>0);
+   if(started.length)out.message_response_rate=r1(started.filter(t=>t.theirs>0).length/started.length*100);
    if(threads.size)out.recurring_relationships_quality_0_10=r1(Math.min(10,10*[...threads.values()].filter(t=>t.mine>=2&&t.theirs>=2).length/Math.max(1,threads.size)));
  }
  return out;
 }
-
 export function analyze(exp,manual={},now=new Date()) {
  const p=profileScore(exp,now),x=p.inputs;
  const derived=archiveMetrics(exp,now,x.name); const inputs={...derived,...manual};
